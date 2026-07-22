@@ -123,7 +123,7 @@ and belongs to the scheduler, next to its own `spawn()`.
 
 ## Tests
 
-24 `.phpt` files covering registration, the switch contract including value and error transfer,
+22 `.phpt` files covering registration, the switch contract including value and error transfer,
 fiber adoption, main-coroutine replacement, and the context.
 
 ## License
