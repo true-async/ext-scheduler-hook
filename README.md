@@ -54,8 +54,9 @@ extension only provides the surface.
 
 ### Activation
 
-A scheduler is registered once per process by handing `register()` a factory. The factory receives
-three capabilities and returns the scheduler, already constructed with them:
+A request installs its scheduler by handing `register()` a factory; the next request of the same
+process calls `register()` again. The factory receives three capabilities and returns the
+scheduler, already constructed with them:
 
 ```php
 Async\SchedulerHook::register('my-scheduler',
@@ -123,8 +124,8 @@ and belongs to the scheduler, next to its own `spawn()`.
 
 ## Tests
 
-22 `.phpt` files covering registration, the switch contract including value and error transfer,
-fiber adoption, main-coroutine replacement, and the context.
+23 `.phpt` files covering registration in every request, the switch contract including value and
+error transfer, fiber adoption, main-coroutine replacement, and the context.
 
 ## License
 

@@ -24,7 +24,7 @@ $make = fn () => new class implements \Async\Scheduler {
 Async\SchedulerHook::register('a', $make);
 echo "registered\n";
 
-// A second registration throws: a scheduler is registered once per process.
+// A second registration in the same request throws.
 try {
     Async\SchedulerHook::register('b', $make);
 } catch (\Error $e) {

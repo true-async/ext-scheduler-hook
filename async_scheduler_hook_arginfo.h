@@ -1,5 +1,5 @@
 /* This is a generated file, edit async_scheduler_hook.stub.php instead.
- * Stub hash: 34d8b530458b685ba1761ffc9145d0818d8afc21 */
+ * Stub hash: 0d30fa7cba979452997f405a8346677c1a09350b */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_get_context, 0, 0, Async\\Context, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, coroutine, IS_OBJECT, 1, "null")

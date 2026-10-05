@@ -61,8 +61,8 @@ interface Scheduler
  * Activation point for the concurrent mode.
  *
  * A scheduler is registered by handing register() a factory that returns an
- * Async\Scheduler. There is exactly one scheduler per process, so the class is
- * used only through its static methods.
+ * Async\Scheduler. A request has at most one scheduler, so the class is used
+ * only through its static methods.
  */
 final class SchedulerHook
 {
@@ -94,13 +94,17 @@ final class SchedulerHook
      * scheduler the factory call is the launch moment: the engine's own
      * launch point has already passed by the time userland code runs.
      *
-     * A scheduler is registered once per process: calling this when a
-     * scheduler is already registered (by a C extension or by an earlier PHP
-     * call) throws an Error. Any other failure is an Error too.
+     * A PHP scheduler lives for one request: every request that wants one
+     * calls this again. Calling it twice in a request, or when a C extension
+     * owns the scheduler slots, throws an Error. Any other failure is an Error
+     * too.
      */
     public static function register(string $module, callable $factory): void {}
 
-    /** Returns the module name of the registered scheduler, or null when none. */
+    /**
+     * Returns the module name given to register() in this request, the name of
+     * the C extension that owns the scheduler slots, or null when neither.
+     */
     public static function getModule(): ?string {}
 
     /**

@@ -240,7 +240,15 @@ typedef struct {
  * class). Process-lifetime: objects carrying a wrapper may outlive any
  * request-local storage. */
 static HashTable *php_async_wrapped_handlers = NULL;
+
+/* The bridge's slots are registered once per process, under this name, by the
+ * first register() call; every later request binds its own PHP scheduler. */
+#define PHP_ASYNC_BRIDGE_MODULE "async_scheduler_hook"
+
+#ifdef ZTS
 static MUTEX_T php_async_wrapped_handlers_mutex = NULL;
+static MUTEX_T php_async_register_mutex = NULL;
+#endif
 
 /* The bridge's map: the coroutine of an object, or NULL when the object is
  * not one of the scheduler's coroutines. This is the coroutine_from_object
@@ -394,7 +402,9 @@ static void php_async_install_object_free(zend_object *object)
 		return;
 	}
 
+#ifdef ZTS
 	tsrm_mutex_lock(php_async_wrapped_handlers_mutex);
+#endif
 
 	if (php_async_wrapped_handlers == NULL) {
 		php_async_wrapped_handlers = pemalloc(sizeof(HashTable), 1);
@@ -415,7 +425,9 @@ static void php_async_install_object_free(zend_object *object)
 				(zend_ulong) (uintptr_t) object->handlers, wrapper);
 	}
 
+#ifdef ZTS
 	tsrm_mutex_unlock(php_async_wrapped_handlers_mutex);
+#endif
 
 	object->handlers = &wrapper->handlers;
 }
@@ -838,14 +850,7 @@ static zend_coroutine_t *php_async_thunk_intercept_fiber(zend_fiber *fiber)
 /* The coroutine's PHP object as a zval, with a borrowed +1 for the call. */
 static void php_async_coroutine_arg(zend_coroutine_t *coro, zval *out)
 {
-	zend_object *object = ZEND_COROUTINE_OBJECT(coro);
-
-	if (object != NULL) {
-		ZVAL_OBJ(out, object);
-		GC_ADDREF(object);
-	} else {
-		ZVAL_NULL(out);
-	}
+	ZVAL_OBJ_COPY(out, ZEND_COROUTINE_OBJECT(coro));
 }
 
 /* Shared body for enqueue/cancel: onEnqueue(coroutine, ?error). transfer_error
@@ -1048,6 +1053,29 @@ static void php_async_build_api(zend_async_scheduler_api_t *api)
 	api->coroutine_from_object = php_async_coroutine_from_object;
 }
 
+/* False when a C extension owns the slots or the engine refused the bridge. */
+static bool php_async_register_slots(void)
+{
+#ifdef ZTS
+	tsrm_mutex_lock(php_async_register_mutex);
+#endif
+
+	bool registered = zend_async_scheduler_launch_fn == php_async_thunk_launch;
+
+	if (!registered && !zend_async_is_enabled()) {
+		zend_async_scheduler_api_t api;
+		php_async_build_api(&api);
+
+		registered = zend_async_scheduler_register(PHP_ASYNC_BRIDGE_MODULE, &api);
+	}
+
+#ifdef ZTS
+	tsrm_mutex_unlock(php_async_register_mutex);
+#endif
+
+	return registered;
+}
+
 ZEND_METHOD(Async_SchedulerHook, register)
 {
 	zend_string *module;
@@ -1059,9 +1087,8 @@ ZEND_METHOD(Async_SchedulerHook, register)
 		Z_PARAM_FUNC(factory_fci, factory_fcc)
 	ZEND_PARSE_PARAMETERS_END();
 
-	/* A scheduler is registered once per process — by a C extension or by
-	 * PHP, whichever comes first. */
-	if (zend_async_is_enabled()) {
+	/* One PHP scheduler per request, and none when a C extension owns the slots. */
+	if (UNEXPECTED(ASH_G(active) || !php_async_register_slots())) {
 		zend_throw_error(NULL, "A scheduler is already registered");
 		RETURN_THROWS();
 	}
@@ -1111,37 +1138,10 @@ ZEND_METHOD(Async_SchedulerHook, register)
 	ASH_G(module) = zend_string_copy(module);
 	ASH_G(active) = true;
 
-	/* The C slots are process-wide and set once; per-thread state is the
-	 * handlers container above. A later request (any thread) only re-binds
-	 * its handlers and launches. */
-	const char *owner = zend_async_get_scheduler_module();
-	bool registered_now = false;
+	ZEND_ASYNC_INITIALIZE;
 
-	if (owner == NULL) {
-		zend_async_scheduler_api_t api;
-		php_async_build_api(&api);
-
-		registered_now = zend_async_scheduler_register(ZSTR_VAL(module), &api);
-
-		if (!registered_now) {
-			/* Lost a registration race — acceptable if to ourselves. */
-			owner = zend_async_get_scheduler_module();
-		}
-	}
-
-	if (!registered_now && (owner == NULL || strcmp(owner, ZSTR_VAL(module)) != 0)) {
+	if (UNEXPECTED(!ZEND_ASYNC_SCHEDULER_LAUNCH())) {
 		php_async_handlers_reset();
-		zend_throw_error(NULL, "Async\\SchedulerHook::register(): the engine refused the scheduler");
-		RETURN_THROWS();
-	}
-
-	if (!ZEND_ASYNC_SCHEDULER_LAUNCH()) {
-		php_async_handlers_reset();
-
-		if (registered_now) {
-			zend_async_scheduler_unregister();
-		}
-
 		ZEND_ASYNC_DEACTIVATE;
 		RETURN_THROWS();
 	}
@@ -1151,9 +1151,14 @@ ZEND_METHOD(Async_SchedulerHook, getModule)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	if (ASH_G(active)) {
+		RETURN_STR_COPY(ASH_G(module));
+	}
+
 	const char *module = zend_async_get_scheduler_module();
 
-	if (module == NULL) {
+	/* The bridge's own slots with no PHP scheduler bound in this request. */
+	if (module == NULL || zend_async_scheduler_launch_fn == php_async_thunk_launch) {
 		RETURN_NULL();
 	}
 
@@ -1334,7 +1339,10 @@ static PHP_GINIT_FUNCTION(async_scheduler_hook)
 
 PHP_MINIT_FUNCTION(async_scheduler_hook)
 {
+#ifdef ZTS
 	php_async_wrapped_handlers_mutex = tsrm_mutex_alloc();
+	php_async_register_mutex = tsrm_mutex_alloc();
+#endif
 
 	async_ce_Scheduler = register_class_Async_Scheduler();
 	register_class_Async_SchedulerHook();
@@ -1378,10 +1386,12 @@ PHP_MSHUTDOWN_FUNCTION(async_scheduler_hook)
 		php_async_wrapped_handlers = NULL;
 	}
 
-	if (php_async_wrapped_handlers_mutex != NULL) {
-		tsrm_mutex_free(php_async_wrapped_handlers_mutex);
-		php_async_wrapped_handlers_mutex = NULL;
-	}
+#ifdef ZTS
+	tsrm_mutex_free(php_async_wrapped_handlers_mutex);
+	php_async_wrapped_handlers_mutex = NULL;
+	tsrm_mutex_free(php_async_register_mutex);
+	php_async_register_mutex = NULL;
+#endif
 
 	return SUCCESS;
 }
