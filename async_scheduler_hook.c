@@ -1034,6 +1034,7 @@ static void php_async_build_api(zend_async_scheduler_api_t *api)
 {
 	memset(api, 0, sizeof(*api));
 	api->size = sizeof(*api);
+	api->version = ZEND_ASYNC_API_VERSION;
 
 	api->launch = php_async_thunk_launch;
 	api->shutdown = php_async_thunk_shutdown;
